@@ -1,6 +1,498 @@
-VPC_A:
-  Type: AWS::EC2::VPC
-  Properties:
-    [VPC CIDR property] : 10.0.0.0/16
-    [VPC name/tag property] : VPC-A
-    
+
+    resource "aws_vpc" "a" {
+  cidr_block           = var.vpc_a_cidr
+  enable_dns_support   = true
+  enable_dns_hostnames = true
+  tags = { Name = "${var.project}-vpc-a-${var.environment}" }
+}
+
+resource "aws_internet_gateway" "a" {
+  vpc_id = aws_vpc.a.id
+  tags   = { Name = "${var.project}-igw-a-${var.environment}" }
+}
+
+# Public subnets (ALB)
+resource "aws_subnet" "a_public" {
+  count                   = 2
+  vpc_id                  = aws_vpc.a.id
+  cidr_block              = cidrsubnet(var.vpc_a_cidr, 8, count.index + 1)
+  availability_zone       = data.aws_availability_zones.available.names[count.index]
+  map_public_ip_on_launch = true
+  tags = { Name = "${var.project}-a-public-${count.index + 1}" }
+}
+
+# Private web subnets (ASG) - 10.0.10.0/24, 10.0.11.0/24
+resource "aws_subnet" "a_web" {
+  count             = 2
+  vpc_id            = aws_vpc.a.id
+  cidr_block        = cidrsubnet(var.vpc_a_cidr, 8, count.index + 10)
+  availability_zone = data.aws_availability_zones.available.names[count.index]
+  tags = { Name = "${var.project}-a-web-${count.index + 1}" }
+}
+
+# Private DB subnets (RDS primary) - 10.0.20.0/24, 10.0.21.0/24
+resource "aws_subnet" "a_db" {
+  count             = 2
+  vpc_id            = aws_vpc.a.id
+  cidr_block        = cidrsubnet(var.vpc_a_cidr, 8, count.index + 20)
+  availability_zone = data.aws_availability_zones.available.names[count.index]
+  tags = { Name = "${var.project}-a-db-${count.index + 1}" }
+}
+
+# NAT gateways (one per AZ)
+resource "aws_eip" "nat" {
+  count  = 2
+  domain = "vpc"
+}
+
+resource "aws_nat_gateway" "a" {
+  count         = 2
+  allocation_id = aws_eip.nat[count.index].id
+  subnet_id     = aws_subnet.a_public[count.index].id
+  depends_on    = [aws_internet_gateway.a]
+}
+
+# Public route table
+resource "aws_route_table" "a_public" {
+  vpc_id = aws_vpc.a.id
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.a.id
+  }
+}
+
+resource "aws_route_table_association" "a_public" {
+  count          = 2
+  subnet_id      = aws_subnet.a_public[count.index].id
+  route_table_id = aws_route_table.a_public.id
+}
+
+# Web route tables (NAT + peering route added in vpc_peering.tf)
+resource "aws_route_table" "a_web" {
+  count  = 2
+  vpc_id = aws_vpc.a.id
+  route {
+    cidr_block     = "0.0.0.0/0"
+    nat_gateway_id = aws_nat_gateway.a[count.index].id
+  }
+}
+
+resource "aws_route_table_association" "a_web" {
+  count          = 2
+  subnet_id      = aws_subnet.a_web[count.index].id
+  route_table_id = aws_route_table.a_web[count.index].id
+}
+
+# DB route tables - no internet route, fully private
+resource "aws_route_table" "a_db" {
+  count  = 2
+  vpc_id = aws_vpc.a.id
+}
+
+resource "aws_route_table_association" "a_db" {
+  count          = 2
+  subnet_id      = aws_subnet.a_db[count.index].id
+  route_table_id = aws_route_table.a_db[count.index].id
+}
+terraform {
+  required_version = ">= 1.5.0"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+  backend "s3" {
+    bucket         = "civicnexus-tf-state"
+    key            = "week4/terraform.tfstate"
+    region         = "eu-west-2"
+    dynamodb_table = "civicnexus-tf-locks"
+    encrypt        = true
+  }
+}
+
+provider "aws" {
+  region = var.aws_region
+}
+variable "aws_region"    { type = string, default = "eu-west-2" }
+variable "project"       { type = string, default = "civicnexus" }
+variable "environment"   { type = string, default = "week4" }
+variable "vpc_a_cidr"    { type = string, default = "10.0.0.0/16" }
+variable "vpc_b_cidr"    { type = string, default = "10.1.0.0/16" }
+variable "instance_type" { type = string, default = "t3.micro" }
+variable "db_username"   { type = string, default = "civicadmin" }
+
+variable "db_password" {
+  description = "Set via TF_VAR_db_password or GitHub secret"
+  type        = string
+  sensitive   = true
+}
+resource "aws_vpc" "b" {
+  cidr_block           = var.vpc_b_cidr
+  enable_dns_support   = true
+  enable_dns_hostnames = true
+  tags = { Name = "${var.project}-vpc-b-${var.environment}" }
+}
+
+resource "aws_subnet" "b_db" {
+  count             = 2
+  vpc_id            = aws_vpc.b.id
+  cidr_block        = cidrsubnet(var.vpc_b_cidr, 8, count.index + 20)
+  availability_zone = data.aws_availability_zones.available.names[count.index]
+  tags = { Name = "${var.project}-b-db-${count.index + 1}" }
+}
+
+resource "aws_route_table" "b_db" {
+  count  = 2
+  vpc_id = aws_vpc.b.id
+}
+
+resource "aws_route_table_association" "b_db" {
+  count          = 2
+  subnet_id      = aws_subnet.b_db[count.index].id
+  route_table_id = aws_route_table.b_db[count.index].id
+}
+resource "aws_vpc_peering_connection" "a_to_b" {
+  vpc_id      = aws_vpc.a.id
+  peer_vpc_id = aws_vpc.b.id
+  auto_accept = true   # same account
+  tags = { Name = "${var.project}-peer-a-b-${var.environment}" }
+}
+
+# Web tier in A -> VPC B (replica reads)
+resource "aws_route" "a_web_to_b" {
+  count                     = 2
+  route_table_id            = aws_route_table.a_web[count.index].id
+  destination_cidr_block    = var.vpc_b_cidr
+  vpc_peering_connection_id = aws_vpc_peering_connection.a_to_b.id
+}
+
+# DB tier in A -> VPC B
+resource "aws_route" "a_db_to_b" {
+  count                     = 2
+  route_table_id            = aws_route_table.a_db[count.index].id
+  destination_cidr_block    = var.vpc_b_cidr
+  vpc_peering_connection_id = aws_vpc_peering_connection.a_to_b.id
+}
+
+# Return traffic: B -> A
+resource "aws_route" "b_db_to_a" {
+  count                     = 2
+  route_table_id            = aws_route_table.b_db[count.index].id
+  destination_cidr_block    = var.vpc_a_cidr
+  vpc_peering_connection_id = aws_vpc_peering_connection.a_to_b.id
+}
+# ALB: open to internet on 80/443
+resource "aws_security_group" "alb" {
+  name        = "${var.project}-alb-sg"
+  description = "Allow HTTP/HTTPS from the internet"
+  vpc_id      = aws_vpc.a.id
+
+  ingress {
+    description = "HTTP"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  ingress {
+    description = "HTTPS"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+# Web tier: only from the ALB; egress to both DBs
+# NOTE: SG references don't work across a peering connection,
+# so the replica rule uses CIDR blocks.
+resource "aws_security_group" "web" {
+  name        = "${var.project}-web-sg"
+  description = "Web tier - traffic only from ALB"
+  vpc_id      = aws_vpc.a.id
+
+  ingress {
+    description     = "HTTP from ALB only"
+    from_port       = 80
+    to_port         = 80
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb.id]
+  }
+  egress {
+    description     = "MySQL to primary RDS"
+    from_port       = 3306
+    to_port         = 3306
+    protocol        = "tcp"
+    security_groups = [aws_security_group.db_a.id]
+  }
+  egress {
+    description = "MySQL to read replica over peering"
+    from_port   = 3306
+    to_port     = 3306
+    protocol    = "tcp"
+    cidr_blocks = [var.vpc_b_cidr]
+  }
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]   # updates via NAT
+  }
+}
+
+# Primary DB: MySQL only from web tier
+resource "aws_security_group" "db_a" {
+  name        = "${var.project}-db-a-sg"
+  description = "RDS primary - MySQL only from web tier"
+  vpc_id      = aws_vpc.a.id
+
+  ingress {
+    description     = "MySQL from web tier"
+    from_port       = 3306
+    to_port         = 3306
+    protocol        = "tcp"
+    security_groups = [aws_security_group.web.id]
+  }
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+# Replica DB: MySQL only from web subnets over peering (CIDR, not SG ref)
+resource "aws_security_group" "db_b" {
+  name        = "${var.project}-db-b-sg"
+  description = "RDS read replica - MySQL from web subnets over peering"
+  vpc_id      = aws_vpc.b.id
+
+  ingress {
+    description = "MySQL from VPC A web subnets"
+    from_port   = 3306
+    to_port     = 3306
+    protocol    = "tcp"
+    cidr_blocks = [for s in aws_subnet.a_web : s.cidr_block]
+  }
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+resource "aws_lb" "web" {
+  name               = "${var.project}-alb-${var.environment}"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.alb.id]
+  subnets            = aws_subnet.a_public[*].id
+}
+
+resource "aws_lb_target_group" "web" {
+  name     = "${var.project}-tg-web"
+  port     = 80
+  protocol = "HTTP"
+  vpc_id   = aws_vpc.a.id
+
+  health_check {
+    path                = "/"
+    protocol            = "HTTP"
+    matcher             = "200"
+    interval            = 30
+    healthy_threshold   = 2
+    unhealthy_threshold = 3
+  }
+}
+
+resource "aws_lb_listener" "http" {
+  load_balancer_arn = aws_lb.web.arn
+  port              = 80
+  protocol          = "HTTP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.web.arn
+  }
+}
+data "aws_availability_zones" "available" { state = "available" }
+
+data "aws_ami" "al2023" {
+  most_recent = true
+  owners      = ["amazon"]
+  filter {
+    name   = "name"
+    values = ["al2023-ami-*-x86_64"]
+  }
+}
+
+resource "aws_launch_template" "web" {
+  name_prefix   = "${var.project}-web-"
+  image_id      = data.aws_ami.al2023.id
+  instance_type = var.instance_type
+
+  network_interfaces {
+    associate_public_ip_address = false
+    security_groups             = [aws_security_group.web.id]
+  }
+
+  user_data = base64encode(templatefile("${path.module}/user_data.sh", {
+    project = var.project
+  }))
+}
+
+resource "aws_autoscaling_group" "web" {
+  name                = "${var.project}-web-asg-${var.environment}"
+  min_size            = 2
+  max_size            = 4
+  desired_capacity    = 2
+  vpc_zone_identifier = aws_subnet.a_web[*].id
+  target_group_arns   = [aws_lb_target_group.web.arn]
+  health_check_type   = "ELB"
+
+  launch_template {
+    id      = aws_launch_template.web.id
+    version = "$Latest"
+  }
+}
+
+resource "aws_autoscaling_policy" "cpu" {
+  name                   = "${var.project}-cpu-target-tracking"
+  autoscaling_group_name = aws_autoscaling_group.web.name
+  policy_type            = "TargetTrackingScaling"
+
+  target_tracking_configuration {
+    predefined_metric_specification {
+      predefined_metric_type = "ASGAverageCPUUtilization"
+    }
+    target_value = 60.0
+  }
+}
+#!/bin/bash
+# user_data.sh
+dnf update -y
+dnf install -y httpd
+systemctl enable --now httpd
+
+cat > /var/www/html/index.html <<'EOF'
+<!DOCTYPE html><html><head><title>CivicNexus - Week 4</title></head>
+<body style="font-family:sans-serif;text-align:center;padding-top:60px;">
+<h1>CivicNexus Web Tier</h1><p>Private ASG instance behind the ALB.</p>
+</body></html>
+EOF
+
+AZ=$(curl -s http://169.254.169.254/latest/meta-data/placement/availability-zone)
+INSTANCE=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
+echo "<p>Instance: $INSTANCE | AZ: $AZ</p>" > /var/www/html/health.html
+resource "aws_db_subnet_group" "primary" {
+  name       = "${var.project}-db-subnets-a"
+  subnet_ids = aws_subnet.a_db[*].id
+}
+
+resource "aws_db_subnet_group" "replica" {
+  name       = "${var.project}-db-subnets-b"
+  subnet_ids = aws_subnet.b_db[*].id
+}
+
+resource "aws_db_instance" "primary" {
+  identifier        = "${var.project}-db-primary"
+  engine            = "mysql"
+  engine_version    = "8.0"
+  instance_class    = "db.t3.micro"
+  allocated_storage = 20
+  storage_encrypted = true
+
+  db_name  = "civicnexus"
+  username = var.db_username
+  password = var.db_password
+
+  db_subnet_group_name   = aws_db_subnet_group.primary.name
+  vpc_security_group_ids = [aws_security_group.db_a.id]
+  publicly_accessible    = false
+
+  backup_retention_period = 7   # REQUIRED > 0 for read replica
+  skip_final_snapshot     = true
+
+  depends_on = [aws_vpc_peering_connection.a_to_b]
+}
+
+resource "aws_db_instance" "replica" {
+  identifier          = "${var.project}-db-replica"
+  replicate_source_db = aws_db_instance.primary.identifier
+  instance_class      = "db.t3.micro"
+
+  db_subnet_group_name   = aws_db_subnet_group.replica.name
+  vpc_security_group_ids = [aws_security_group.db_b.id]
+  publicly_accessible    = false
+
+  # Replicas can't set credentials or backups
+  skip_final_snapshot = true
+}
+output "alb_dns_name"         { value = aws_lb.web.dns_name }
+output "rds_primary_endpoint" { value = aws_db_instance.primary.endpoint }
+output "rds_replica_endpoint" { value = aws_db_instance.replica.endpoint }
+output "vpc_a_id"             { value = aws_vpc.a.id }
+output "vpc_b_id"             { value = aws_vpc.b.id }
+output "peering_id"           { value = aws_vpc_peering_connection.a_to_b.id }
+name: Deploy CivicNexus Week 4
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  AWS_REGION: eu-west-2
+  TF_VERSION: 1.9.0
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: terraform   # adjust to your tf folder path
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Terraform Format
+        run: terraform fmt -check -recursive
+
+      - name: Terraform Init
+        run: terraform init -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}"
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        run: terraform plan -no-color -out=tfplan
+        env:
+          TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
+
+      - name: Terraform Apply
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: terraform apply -auto-approve tfplan
+        env:
+          TF_VAR_db_password: ${{ secrets.DB_PASSWORD }}
+          
