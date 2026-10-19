@@ -738,8 +738,8 @@ Resources:
       SourceDBInstanceIdentifier: !Ref DbPrimary
       DBInstanceClass: db.t3.micro
       DBSubnetGroupName: !Ref DbSubnetsB
-      VPCSecurityGroups:
-        - !GetAtt DbBSg.GroupId
+VPCSecurityGroups:
+  - !GetAtt DbBSg.GroupId
       PubliclyAccessible: false
       StorageEncrypted: true
       AutoMinorVersionUpgrade: true
