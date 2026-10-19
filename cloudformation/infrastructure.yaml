@@ -1,51 +1,82 @@
+
 AWSTemplateFormatVersion: '2010-09-09'
-Description: CivicNexus Week 4 - VPC A + VPC B + peering + ALB + private web ASG + RDS primary + cross-VPC read replica
+
+Description: >
+  CivicNexus Week 4 - Secure dual-VPC architecture with VPC peering,
+  public ALB, private web Auto Scaling Group, Multi-AZ RDS primary,
+  and a private cross-VPC MySQL read replica.
 
 Parameters:
   Environment:
     Type: String
     Default: week4
+    AllowedPattern: '[a-zA-Z0-9-]+'
+
   VpcACidr:
     Type: String
     Default: 10.0.0.0/16
+
   VpcBCidr:
     Type: String
     Default: 10.1.0.0/16
+
   InstanceType:
     Type: String
     Default: t3.micro
+
   DBUsername:
     Type: String
     Default: civicadmin
+    MinLength: 1
+    MaxLength: 16
+    AllowedPattern: '[a-zA-Z][a-zA-Z0-9]*'
+
   DBPassword:
     Type: String
     NoEcho: true
     MinLength: 8
-    Description: RDS master password
+    MaxLength: 41
+    Description: >
+      Lab database password. For production, use Secrets Manager.
+
   DBName:
     Type: String
     Default: civicnexus
+    MinLength: 1
+    MaxLength: 64
+    AllowedPattern: '[a-zA-Z][a-zA-Z0-9]*'
 
 Resources:
-  # ================= VPC A =================
+
+  # =========================================================
+  # VPC A: APPLICATION VPC
+  # Public ALB, private web tier and private primary database
+  # =========================================================
+
   VpcA:
     Type: AWS::EC2::VPC
     Properties:
       CidrBlock: !Ref VpcACidr
       EnableDnsSupport: true
       EnableDnsHostnames: true
-      Tags: [{ Key: Name, Value: !Sub "civicnexus-vpc-a-${Environment}" }]
+      Tags:
+        - Key: Name
+          Value: !Sub civicnexus-vpc-a-${Environment}
 
   IgwA:
     Type: AWS::EC2::InternetGateway
     Properties:
-      Tags: [{ Key: Name, Value: !Sub "civicnexus-igw-a-${Environment}" }]
+      Tags:
+        - Key: Name
+          Value: !Sub civicnexus-igw-a-${Environment}
 
   IgwAAttach:
     Type: AWS::EC2::VPCGatewayAttachment
     Properties:
       VpcId: !Ref VpcA
       InternetGatewayId: !Ref IgwA
+
+  # Public subnets: ALB and NAT gateways
 
   APublic1:
     Type: AWS::EC2::Subnet
@@ -54,7 +85,9 @@ Resources:
       CidrBlock: 10.0.1.0/24
       AvailabilityZone: !Select [0, !GetAZs '']
       MapPublicIpOnLaunch: true
-      Tags: [{ Key: Name, Value: civicnexus-a-public-1 }]
+      Tags:
+        - Key: Name
+          Value: civicnexus-a-public-1
 
   APublic2:
     Type: AWS::EC2::Subnet
@@ -63,7 +96,11 @@ Resources:
       CidrBlock: 10.0.2.0/24
       AvailabilityZone: !Select [1, !GetAZs '']
       MapPublicIpOnLaunch: true
-      Tags: [{ Key: Name, Value: civicnexus-a-public-2 }]
+      Tags:
+        - Key: Name
+          Value: civicnexus-a-public-2
+
+  # Private web subnets
 
   AWeb1:
     Type: AWS::EC2::Subnet
@@ -71,7 +108,10 @@ Resources:
       VpcId: !Ref VpcA
       CidrBlock: 10.0.10.0/24
       AvailabilityZone: !Select [0, !GetAZs '']
-      Tags: [{ Key: Name, Value: civicnexus-a-web-1 }]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: civicnexus-a-web-1
 
   AWeb2:
     Type: AWS::EC2::Subnet
@@ -79,7 +119,12 @@ Resources:
       VpcId: !Ref VpcA
       CidrBlock: 10.0.11.0/24
       AvailabilityZone: !Select [1, !GetAZs '']
-      Tags: [{ Key: Name, Value: civicnexus-a-web-2 }]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: civicnexus-a-web-2
+
+  # Private database subnets
 
   ADB1:
     Type: AWS::EC2::Subnet
@@ -87,7 +132,10 @@ Resources:
       VpcId: !Ref VpcA
       CidrBlock: 10.0.20.0/24
       AvailabilityZone: !Select [0, !GetAZs '']
-      Tags: [{ Key: Name, Value: civicnexus-a-db-1 }]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: civicnexus-a-db-1
 
   ADB2:
     Type: AWS::EC2::Subnet
@@ -95,35 +143,20 @@ Resources:
       VpcId: !Ref VpcA
       CidrBlock: 10.0.21.0/24
       AvailabilityZone: !Select [1, !GetAZs '']
-      Tags: [{ Key: Name, Value: civicnexus-a-db-2 }]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: civicnexus-a-db-2
 
-  NatEip1:
-    Type: AWS::EC2::EIP
-    DependsOn: IgwAAttach
-    Properties: { Domain: vpc }
-
-  NatEip2:
-    Type: AWS::EC2::EIP
-    DependsOn: IgwAAttach
-    Properties: { Domain: vpc }
-
-  NatGw1:
-    Type: AWS::EC2::NatGateway
-    Properties:
-      AllocationId: !GetAtt NatEip1.AllocationId
-      SubnetId: !Ref APublic1
-
-  NatGw2:
-    Type: AWS::EC2::NatGateway
-    Properties:
-      AllocationId: !GetAtt NatEip2.AllocationId
-      SubnetId: !Ref APublic2
+  # Public routing
 
   RtAPublic:
     Type: AWS::EC2::RouteTable
     Properties:
       VpcId: !Ref VpcA
-      Tags: [{ Key: Name, Value: civicnexus-a-rt-public }]
+      Tags:
+        - Key: Name
+          Value: civicnexus-a-rt-public
 
   RtAPublicRoute:
     Type: AWS::EC2::Route
@@ -135,26 +168,80 @@ Resources:
 
   RtAPublicAssoc1:
     Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties: { SubnetId: !Ref APublic1, RouteTableId: !Ref RtAPublic }
+    Properties:
+      SubnetId: !Ref APublic1
+      RouteTableId: !Ref RtAPublic
+
   RtAPublicAssoc2:
     Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties: { SubnetId: !Ref APublic2, RouteTableId: !Ref RtAPublic }
+    Properties:
+      SubnetId: !Ref APublic2
+      RouteTableId: !Ref RtAPublic
+
+  # NAT gateways provide outbound internet access for private
+  # web instances without assigning them public IP addresses.
+
+  NatEip1:
+    Type: AWS::EC2::EIP
+    DependsOn: IgwAAttach
+    Properties:
+      Domain: vpc
+
+  NatEip2:
+    Type: AWS::EC2::EIP
+    DependsOn: IgwAAttach
+    Properties:
+      Domain: vpc
+
+  NatGw1:
+    Type: AWS::EC2::NatGateway
+    DependsOn: RtAPublicRoute
+    Properties:
+      AllocationId: !GetAtt NatEip1.AllocationId
+      SubnetId: !Ref APublic1
+      Tags:
+        - Key: Name
+          Value: civicnexus-nat-1
+
+  NatGw2:
+    Type: AWS::EC2::NatGateway
+    DependsOn: RtAPublicRoute
+    Properties:
+      AllocationId: !GetAtt NatEip2.AllocationId
+      SubnetId: !Ref APublic2
+      Tags:
+        - Key: Name
+          Value: civicnexus-nat-2
+
+  # Separate web route tables: one NAT gateway per AZ.
 
   RtAWeb1:
     Type: AWS::EC2::RouteTable
-    Properties: { VpcId: !Ref VpcA, Tags: [{ Key: Name, Value: civicnexus-a-rt-web-1 }] }
+    Properties:
+      VpcId: !Ref VpcA
+      Tags:
+        - Key: Name
+          Value: civicnexus-a-rt-web-1
+
   RtAWeb2:
     Type: AWS::EC2::RouteTable
-    Properties: { VpcId: !Ref VpcA, Tags: [{ Key: Name, Value: civicnexus-a-rt-web-2 }] }
+    Properties:
+      VpcId: !Ref VpcA
+      Tags:
+        - Key: Name
+          Value: civicnexus-a-rt-web-2
 
-  RtAWeb1Route:
+  RtAWeb1Internet:
     Type: AWS::EC2::Route
+    DependsOn: NatGw1
     Properties:
       RouteTableId: !Ref RtAWeb1
       DestinationCidrBlock: 0.0.0.0/0
       NatGatewayId: !Ref NatGw1
-  RtAWeb2Route:
+
+  RtAWeb2Internet:
     Type: AWS::EC2::Route
+    DependsOn: NatGw2
     Properties:
       RouteTableId: !Ref RtAWeb2
       DestinationCidrBlock: 0.0.0.0/0
@@ -162,33 +249,61 @@ Resources:
 
   RtAWebAssoc1:
     Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties: { SubnetId: !Ref AWeb1, RouteTableId: !Ref RtAWeb1 }
+    Properties:
+      SubnetId: !Ref AWeb1
+      RouteTableId: !Ref RtAWeb1
+
   RtAWebAssoc2:
     Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties: { SubnetId: !Ref AWeb2, RouteTableId: !Ref RtAWeb2 }
+    Properties:
+      SubnetId: !Ref AWeb2
+      RouteTableId: !Ref RtAWeb2
+
+  # Database route tables deliberately have no default
+  # internet route.
 
   RtADB1:
     Type: AWS::EC2::RouteTable
-    Properties: { VpcId: !Ref VpcA, Tags: [{ Key: Name, Value: civicnexus-a-rt-db-1 }] }
+    Properties:
+      VpcId: !Ref VpcA
+      Tags:
+        - Key: Name
+          Value: civicnexus-a-rt-db-1
+
   RtADB2:
     Type: AWS::EC2::RouteTable
-    Properties: { VpcId: !Ref VpcA, Tags: [{ Key: Name, Value: civicnexus-a-rt-db-2 }] }
+    Properties:
+      VpcId: !Ref VpcA
+      Tags:
+        - Key: Name
+          Value: civicnexus-a-rt-db-2
 
   RtADBAssoc1:
     Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties: { SubnetId: !Ref ADB1, RouteTableId: !Ref RtADB1 }
+    Properties:
+      SubnetId: !Ref ADB1
+      RouteTableId: !Ref RtADB1
+
   RtADBAssoc2:
     Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties: { SubnetId: !Ref ADB2, RouteTableId: !Ref RtADB2 }
+    Properties:
+      SubnetId: !Ref ADB2
+      RouteTableId: !Ref RtADB2
 
-  # ================= VPC B =================
+  # =========================================================
+  # VPC B: ISOLATED DATA VPC
+  # Private subnets for the cross-VPC read replica
+  # =========================================================
+
   VpcB:
     Type: AWS::EC2::VPC
     Properties:
       CidrBlock: !Ref VpcBCidr
       EnableDnsSupport: true
       EnableDnsHostnames: true
-      Tags: [{ Key: Name, Value: !Sub "civicnexus-vpc-b-${Environment}" }]
+      Tags:
+        - Key: Name
+          Value: !Sub civicnexus-vpc-b-${Environment}
 
   BDB1:
     Type: AWS::EC2::Subnet
@@ -196,7 +311,10 @@ Resources:
       VpcId: !Ref VpcB
       CidrBlock: 10.1.20.0/24
       AvailabilityZone: !Select [0, !GetAZs '']
-      Tags: [{ Key: Name, Value: civicnexus-b-db-1 }]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: civicnexus-b-db-1
 
   BDB2:
     Type: AWS::EC2::Subnet
@@ -204,119 +322,230 @@ Resources:
       VpcId: !Ref VpcB
       CidrBlock: 10.1.21.0/24
       AvailabilityZone: !Select [1, !GetAZs '']
-      Tags: [{ Key: Name, Value: civicnexus-b-db-2 }]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: civicnexus-b-db-2
 
   RtBDB1:
     Type: AWS::EC2::RouteTable
-    Properties: { VpcId: !Ref VpcB, Tags: [{ Key: Name, Value: civicnexus-b-rt-db-1 }] }
+    Properties:
+      VpcId: !Ref VpcB
+      Tags:
+        - Key: Name
+          Value: civicnexus-b-rt-db-1
+
   RtBDB2:
     Type: AWS::EC2::RouteTable
-    Properties: { VpcId: !Ref VpcB, Tags: [{ Key: Name, Value: civicnexus-b-rt-db-2 }] }
+    Properties:
+      VpcId: !Ref VpcB
+      Tags:
+        - Key: Name
+          Value: civicnexus-b-rt-db-2
 
   RtBDBAssoc1:
     Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties: { SubnetId: !Ref BDB1, RouteTableId: !Ref RtBDB1 }
+    Properties:
+      SubnetId: !Ref BDB1
+      RouteTableId: !Ref RtBDB1
+
   RtBDBAssoc2:
     Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties: { SubnetId: !Ref BDB2, RouteTableId: !Ref RtBDB2 }
+    Properties:
+      SubnetId: !Ref BDB2
+      RouteTableId: !Ref RtBDB2
 
-  # ================= Peering + routing =================
+  # =========================================================
+  # VPC PEERING
+  # Non-overlapping CIDRs allow private inter-VPC routing
+  # =========================================================
+
   VpcPeering:
     Type: AWS::EC2::VPCPeeringConnection
     Properties:
       VpcId: !Ref VpcA
       PeerVpcId: !Ref VpcB
-      Tags: [{ Key: Name, Value: !Sub "civicnexus-peer-a-b-${Environment}" }]
+      Tags:
+        - Key: Name
+          Value: !Sub civicnexus-peer-a-b-${Environment}
+
+  # Web tier routes to VPC B.
 
   RtAWeb1ToB:
     Type: AWS::EC2::Route
-    Properties: { RouteTableId: !Ref RtAWeb1, DestinationCidrBlock: !Ref VpcBCidr, VpcPeeringConnectionId: !Ref VpcPeering }
+    Properties:
+      RouteTableId: !Ref RtAWeb1
+      DestinationCidrBlock: !Ref VpcBCidr
+      VpcPeeringConnectionId: !Ref VpcPeering
+
   RtAWeb2ToB:
     Type: AWS::EC2::Route
-    Properties: { RouteTableId: !Ref RtAWeb2, DestinationCidrBlock: !Ref VpcBCidr, VpcPeeringConnectionId: !Ref VpcPeering }
+    Properties:
+      RouteTableId: !Ref RtAWeb2
+      DestinationCidrBlock: !Ref VpcBCidr
+      VpcPeeringConnectionId: !Ref VpcPeering
+
+  # Primary database subnet routes to VPC B.
+
   RtADB1ToB:
     Type: AWS::EC2::Route
-    Properties: { RouteTableId: !Ref RtADB1, DestinationCidrBlock: !Ref VpcBCidr, VpcPeeringConnectionId: !Ref VpcPeering }
+    Properties:
+      RouteTableId: !Ref RtADB1
+      DestinationCidrBlock: !Ref VpcBCidr
+      VpcPeeringConnectionId: !Ref VpcPeering
+
   RtADB2ToB:
     Type: AWS::EC2::Route
-    Properties: { RouteTableId: !Ref RtADB2, DestinationCidrBlock: !Ref VpcBCidr, VpcPeeringConnectionId: !Ref VpcPeering }
+    Properties:
+      RouteTableId: !Ref RtADB2
+      DestinationCidrBlock: !Ref VpcBCidr
+      VpcPeeringConnectionId: !Ref VpcPeering
+
+  # VPC B routes back to VPC A.
+
   RtBDB1ToA:
     Type: AWS::EC2::Route
-    Properties: { RouteTableId: !Ref RtBDB1, DestinationCidrBlock: !Ref VpcACidr, VpcPeeringConnectionId: !Ref VpcPeering }
+    Properties:
+      RouteTableId: !Ref RtBDB1
+      DestinationCidrBlock: !Ref VpcACidr
+      VpcPeeringConnectionId: !Ref VpcPeering
+
   RtBDB2ToA:
     Type: AWS::EC2::Route
-    Properties: { RouteTableId: !Ref RtBDB2, DestinationCidrBlock: !Ref VpcACidr, VpcPeeringConnectionId: !Ref VpcPeering }
+    Properties:
+      RouteTableId: !Ref RtBDB2
+      DestinationCidrBlock: !Ref VpcACidr
+      VpcPeeringConnectionId: !Ref VpcPeering
 
-  # ================= Security groups =================
+  # =========================================================
+  # SECURITY GROUPS
+  # Separate security boundaries for ALB, web and databases
+  # =========================================================
+
   AlbSg:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupName: civicnexus-alb-sg
-      GroupDescription: Allow HTTP/HTTPS from the internet
+      GroupDescription: Public HTTP entry point for the application
       VpcId: !Ref VpcA
       SecurityGroupIngress:
-        - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0 }
-        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0 }
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: HTTP access to the ALB
       SecurityGroupEgress:
-        - { IpProtocol: -1, CidrIp: 0.0.0.0/0 }
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          DestinationSecurityGroupId: !GetAtt WebSg.GroupId
+          Description: Forward HTTP traffic to the web tier
+      Tags:
+        - Key: Name
+          Value: civicnexus-alb-sg
 
   WebSg:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupName: civicnexus-web-sg
-      GroupDescription: Web tier - HTTP from ALB only
+      GroupDescription: Allow web requests from the ALB only
       VpcId: !Ref VpcA
       SecurityGroupIngress:
-        - { IpProtocol: tcp, FromPort: 80, ToPort: 80, SourceSecurityGroupId: !GetAtt AlbSg.GroupId }
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !GetAtt AlbSg.GroupId
+          Description: HTTP from the ALB only
       SecurityGroupEgress:
-        - { IpProtocol: -1, CidrIp: 0.0.0.0/0 }
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Outbound application and update traffic
+      Tags:
+        - Key: Name
+          Value: civicnexus-web-sg
 
   DbASg:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupName: civicnexus-db-a-sg
-      GroupDescription: RDS primary - MySQL only from web tier
+      GroupDescription: Primary RDS database access from the web tier
       VpcId: !Ref VpcA
       SecurityGroupIngress:
-        - { IpProtocol: tcp, FromPort: 3306, ToPort: 3306, SourceSecurityGroupId: !GetAtt WebSg.GroupId }
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !GetAtt WebSg.GroupId
+          Description: MySQL from the application tier
       SecurityGroupEgress:
-        - { IpProtocol: -1, CidrIp: 0.0.0.0/0 }
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Default outbound policy for the database SG
+      Tags:
+        - Key: Name
+          Value: civicnexus-db-a-sg
 
   DbBSg:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupName: civicnexus-db-b-sg
-      GroupDescription: RDS read replica - MySQL from web subnets over peering
+      GroupDescription: Read replica access from authorised web subnets
       VpcId: !Ref VpcB
       SecurityGroupIngress:
-        - { IpProtocol: tcp, FromPort: 3306, ToPort: 3306, CidrIp: 10.0.10.0/24 }
-        - { IpProtocol: tcp, FromPort: 3306, ToPort: 3306, CidrIp: 10.0.11.0/24 }
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          CidrIp: 10.0.10.0/24
+          Description: MySQL from web subnet AZ 1
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          CidrIp: 10.0.11.0/24
+          Description: MySQL from web subnet AZ 2
       SecurityGroupEgress:
-        - { IpProtocol: -1, CidrIp: 0.0.0.0/0 }
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Default outbound policy for the replica SG
+      Tags:
+        - Key: Name
+          Value: civicnexus-db-b-sg
 
-  # ================= ALB =================
+  # =========================================================
+  # APPLICATION LOAD BALANCER
+  # Deployed across two public Availability Zones
+  # =========================================================
+
   Alb:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    DependsOn: IgwAAttach
     Properties:
-      Name: !Sub "civicnexus-alb-${Environment}"
+      Name: !Sub civicnexus-alb-${Environment}
       Scheme: internet-facing
       Type: application
-      SecurityGroups: [!GetAtt AlbSg.GroupId]
-      Subnets: [!Ref APublic1, !Ref APublic2]
+      IpAddressType: ipv4
+      SecurityGroups:
+        - !GetAtt AlbSg.GroupId
+      Subnets:
+        - !Ref APublic1
+        - !Ref APublic2
+      Tags:
+        - Key: Name
+          Value: civicnexus-alb
 
   AlbTg:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
-      Name: !Sub "civicnexus-tg-${Environment}"
+      Name: !Sub civicnexus-tg-${Environment}
       Port: 80
       Protocol: HTTP
       VpcId: !Ref VpcA
+      TargetType: instance
+      HealthCheckEnabled: true
       HealthCheckPath: /
       HealthCheckProtocol: HTTP
-      Matcher: { HttpCode: '200' }
+      Matcher:
+        HttpCode: '200'
       HealthyThresholdCount: 2
       UnhealthyThresholdCount: 3
-      IntervalSeconds: 30
+      HealthCheckIntervalSeconds: 30
+      Tags:
+        - Key: Name
+          Value: civicnexus-web-targets
 
   AlbListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
@@ -328,115 +557,207 @@ Resources:
         - Type: forward
           TargetGroupArn: !Ref AlbTg
 
-  # ================= Private web ASG =================
+  # =========================================================
+  # PRIVATE WEB TIER
+  # Launch template and Auto Scaling Group across two AZs
+  # =========================================================
+
   LaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
     Properties:
-      LaunchTemplateName: !Sub "civicnexus-web-${Environment}"
+      LaunchTemplateName: !Sub civicnexus-web-${Environment}
       LaunchTemplateData:
         ImageId: '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
         InstanceType: !Ref InstanceType
+        MetadataOptions:
+          HttpEndpoint: enabled
+          HttpTokens: required
+          HttpPutResponseHopLimit: 1
         NetworkInterfaces:
-          - AssociatePublicIpAddress: false
-            DeviceIndex: 0
-            Groups: [!GetAtt WebSg.GroupId]
+          - DeviceIndex: 0
+            AssociatePublicIpAddress: false
+            Groups:
+              - !GetAtt WebSg.GroupId
         UserData:
           Fn::Base64: !Sub |
             #!/bin/bash
-            dnf update -y
+            set -eux
+
             dnf install -y httpd
             systemctl enable --now httpd
+
             cat > /var/www/html/index.html <<'EOF'
             <!DOCTYPE html>
             <html>
-            <head><title>CivicNexus - Week 4</title></head>
-            <body style="font-family:sans-serif; text-align:center; padding-top:60px;">
+            <head>
+              <title>CivicNexus Week 4</title>
+            </head>
+            <body style="font-family:sans-serif;text-align:center;padding-top:60px;">
               <h1>CivicNexus Web Tier</h1>
-              <p>Private ASG instance behind the ALB.</p>
+              <p>Private application instance behind the ALB.</p>
+              <p>Dual-VPC segmented architecture.</p>
             </body>
             </html>
             EOF
-            AZ=$(curl -s http://169.254.169.254/latest/meta-data/placement/availability-zone)
-            INSTANCE=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
-            echo "<p>Instance: $INSTANCE | AZ: $AZ</p>" > /var/www/html/health.html
+
+            TOKEN=$(curl -s -X PUT \
+              "http://169.254.169.254/latest/api/token" \
+              -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+
+            AZ=$(curl -s \
+              -H "X-aws-ec2-metadata-token: $TOKEN" \
+              http://169.254.169.254/latest/meta-data/placement/availability-zone)
+
+            INSTANCE=$(curl -s \
+              -H "X-aws-ec2-metadata-token: $TOKEN" \
+              http://169.254.169.254/latest/meta-data/instance-id)
+
+            echo "<p>Instance: $INSTANCE | AZ: $AZ</p>" \
+              >> /var/www/html/index.html
 
   WebAsg:
     Type: AWS::AutoScaling::AutoScalingGroup
-    DependsOn: IgwAAttach
+    DependsOn:
+      - RtAWeb1Internet
+      - RtAWeb2Internet
+      - RtAWeb1ToB
+      - RtAWeb2ToB
     Properties:
-      AutoScalingGroupName: !Sub "civicnexus-web-asg-${Environment}"
+      AutoScalingGroupName: !Sub civicnexus-web-asg-${Environment}
       MinSize: '2'
       MaxSize: '4'
       DesiredCapacity: '2'
-      VPCZoneIdentifier: [!Ref AWeb1, !Ref AWeb2]
-      TargetGroupARNs: [!Ref AlbTg]
+      VPCZoneIdentifier:
+        - !Ref AWeb1
+        - !Ref AWeb2
+      TargetGroupARNs:
+        - !Ref AlbTg
       HealthCheckType: ELB
+      HealthCheckGracePeriod: 180
       LaunchTemplate:
         LaunchTemplateId: !Ref LaunchTemplate
         Version: !GetAtt LaunchTemplate.LatestVersionNumber
       Tags:
         - Key: Name
-          Value: civicnexus-web-asg
+          Value: civicnexus-web
           PropagateAtLaunch: true
 
-  # ================= RDS primary + cross-VPC read replica =================
+  # =========================================================
+  # RDS SUBNET GROUPS
+  # Both database tiers use private subnets in two AZs
+  # =========================================================
+
   DbSubnetsA:
     Type: AWS::RDS::DBSubnetGroup
     Properties:
-      DBSubnetGroupName: civicnexus-db-subnets-a
-      DBSubnetGroupDescription: Primary DB subnets in VPC A
-      SubnetIds: [!Ref ADB1, !Ref ADB2]
+      DBSubnetGroupDescription: Private primary DB subnets in VPC A
+      SubnetIds:
+        - !Ref ADB1
+        - !Ref ADB2
+      Tags:
+        - Key: Name
+          Value: civicnexus-db-subnets-a
 
   DbSubnetsB:
     Type: AWS::RDS::DBSubnetGroup
     Properties:
-      DBSubnetGroupName: civicnexus-db-subnets-b
-      DBSubnetGroupDescription: Replica DB subnets in VPC B
-      SubnetIds: [!Ref BDB1, !Ref BDB2]
+      DBSubnetGroupDescription: Private read replica subnets in VPC B
+      SubnetIds:
+        - !Ref BDB1
+        - !Ref BDB2
+      Tags:
+        - Key: Name
+          Value: civicnexus-db-subnets-b
+
+  # =========================================================
+  # PRIMARY MYSQL DATABASE
+  # Multi-AZ for availability and encrypted storage
+  # =========================================================
 
   DbPrimary:
     Type: AWS::RDS::DBInstance
-    DependsOn: VpcPeering
+    DependsOn:
+      - RtADB1ToB
+      - RtADB2ToB
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
     Properties:
-      DBInstanceIdentifier: !Sub "civicnexus-db-primary-${Environment}"
+      DBInstanceIdentifier: !Sub civicnexus-db-primary-${Environment}
       Engine: mysql
       EngineVersion: '8.0'
       DBInstanceClass: db.t3.micro
-      AllocatedStorage: '20'
+      AllocatedStorage: 20
+      StorageType: gp3
       StorageEncrypted: true
       DBName: !Ref DBName
       MasterUsername: !Ref DBUsername
       MasterUserPassword: !Ref DBPassword
       DBSubnetGroupName: !Ref DbSubnetsA
-      VPCSecurityGroups: [!GetAtt DbASg.GroupId]
+      VPCSecurityGroups:
+        - !GetAtt DbASg.GroupId
       PubliclyAccessible: false
+      MultiAZ: true
       BackupRetentionPeriod: 7
-      DeleteAutomatedBackups: true
+      AutoMinorVersionUpgrade: true
+      CopyTagsToSnapshot: true
+      Tags:
+        - Key: Name
+          Value: civicnexus-db-primary
+
+  # =========================================================
+  # CROSS-VPC MYSQL READ REPLICA
+  # Private endpoint in VPC B, reached through VPC peering
+  # =========================================================
 
   DbReplica:
     Type: AWS::RDS::DBInstance
-    DependsOn: DbPrimary
+    DependsOn:
+      - DbPrimary
+      - RtBDB1ToA
+      - RtBDB2ToA
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
     Properties:
-      DBInstanceIdentifier: !Sub "civicnexus-db-replica-${Environment}"
+      DBInstanceIdentifier: !Sub civicnexus-db-replica-${Environment}
       SourceDBInstanceIdentifier: !Ref DbPrimary
       DBInstanceClass: db.t3.micro
       DBSubnetGroupName: !Ref DbSubnetsB
-      VPCSecurityGroups: [!GetAtt DbBSg.GroupId]
+      VPCSecurityGroups:
+        - !GetAtt DbBSg.GroupId
       PubliclyAccessible: false
+      StorageEncrypted: true
+      AutoMinorVersionUpgrade: true
+      CopyTagsToSnapshot: true
+      Tags:
+        - Key: Name
+          Value: civicnexus-db-replica
 
 Outputs:
+
   AlbDnsName:
-    Description: Public URL of the web app
+    Description: Public DNS name of the application load balancer
     Value: !GetAtt Alb.DNSName
+
+  WebAsgName:
+    Description: Name of the private web Auto Scaling Group
+    Value: !Ref WebAsg
+
   RdsPrimaryEndpoint:
-    Description: RDS writer endpoint
+    Description: Private writer endpoint in VPC A
     Value: !GetAtt DbPrimary.Endpoint.Address
+
   RdsReplicaEndpoint:
-    Description: RDS read replica endpoint (reachable over peering)
+    Description: Private read replica endpoint in VPC B
     Value: !GetAtt DbReplica.Endpoint.Address
+
   VpcAId:
+    Description: Application VPC ID
     Value: !Ref VpcA
+
   VpcBId:
+    Description: Data VPC ID
     Value: !Ref VpcB
+
   PeeringId:
+    Description: VPC peering connection ID
     Value: !Ref VpcPeering
