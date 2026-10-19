@@ -26,4 +26,5 @@ jobs:
             --stack-name infra-505az \
             --template-file cloudformation/infrastructure.yaml \
             --capabilities CAPABILITY_IAM \
-            --region ${{ vars.AWS_REGION }}
+            --region ${{ vars.AWS_REGION }} \
+            --parameter-overrides DBPassword="${{ secrets.DB_PASSWORD }}"
