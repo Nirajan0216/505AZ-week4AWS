@@ -737,7 +737,6 @@ Resources:
       DBInstanceIdentifier: !Sub civicnexus-db-replica-${Environment}
       SourceDBInstanceIdentifier: !Ref DbPrimary
       DBInstanceClass: db.t3.micro
-      DBSubnetGroupName: !Ref DbSubnetsB
 VPCSecurityGroups:
   - !GetAtt DbBSg.GroupId
       PubliclyAccessible: false
