@@ -433,12 +433,8 @@ Resources:
           ToPort: 80
           CidrIp: 0.0.0.0/0
           Description: HTTP access to the ALB
-      SecurityGroupEgress:
-        - IpProtocol: tcp
-          FromPort: 80
-          ToPort: 80
-          DestinationSecurityGroupId: !GetAtt WebSg.GroupId
-          Description: Forward HTTP traffic to the web tier
+      # Egress is defined separately below to avoid circular dependencies.
+      SecurityGroupEgress: []
       Tags:
         - Key: Name
           Value: civicnexus-alb-sg
@@ -448,12 +444,6 @@ Resources:
     Properties:
       GroupDescription: Allow web requests from the ALB only
       VpcId: !Ref VpcA
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 80
-          ToPort: 80
-          SourceSecurityGroupId: !GetAtt AlbSg.GroupId
-          Description: HTTP from the ALB only
       SecurityGroupEgress:
         - IpProtocol: -1
           CidrIp: 0.0.0.0/0
@@ -467,12 +457,6 @@ Resources:
     Properties:
       GroupDescription: Primary RDS database access from the web tier
       VpcId: !Ref VpcA
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 3306
-          ToPort: 3306
-          SourceSecurityGroupId: !GetAtt WebSg.GroupId
-          Description: MySQL from the application tier
       SecurityGroupEgress:
         - IpProtocol: -1
           CidrIp: 0.0.0.0/0
@@ -480,6 +464,38 @@ Resources:
       Tags:
         - Key: Name
           Value: civicnexus-db-a-sg
+
+  # Define cross-security-group rules separately. This prevents
+  # CloudFormation circular dependencies between security groups.
+  AlbToWebEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !GetAtt AlbSg.GroupId
+      IpProtocol: tcp
+      FromPort: 80
+      ToPort: 80
+      DestinationSecurityGroupId: !GetAtt WebSg.GroupId
+      Description: Forward HTTP traffic to the web tier
+
+  WebFromAlbIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !GetAtt WebSg.GroupId
+      IpProtocol: tcp
+      FromPort: 80
+      ToPort: 80
+      SourceSecurityGroupId: !GetAtt AlbSg.GroupId
+      Description: HTTP from the ALB only
+
+  WebToPrimaryDbIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !GetAtt DbASg.GroupId
+      IpProtocol: tcp
+      FromPort: 3306
+      ToPort: 3306
+      SourceSecurityGroupId: !GetAtt WebSg.GroupId
+      Description: MySQL from the application tier
 
   DbBSg:
     Type: AWS::EC2::SecurityGroup
