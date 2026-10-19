@@ -23,7 +23,7 @@ jobs:
       - name: Deploy stack
         run: |
           aws cloudformation deploy \
-            --stack-name 505az-infrastructure \
+            --stack-name infra-505az \
             --template-file cloudformation/infrastructure.yaml \
             --capabilities CAPABILITY_IAM \
             --region ${{ vars.AWS_REGION }}
