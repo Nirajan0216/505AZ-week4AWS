@@ -732,13 +732,14 @@ Resources:
       - RtBDB1ToA
       - RtBDB2ToA
     DeletionPolicy: Snapshot
-    UpdateReplacePolicy: Snapshot
+       UpdateReplacePolicy: Snapshot
     Properties:
       DBInstanceIdentifier: !Sub civicnexus-db-replica-${Environment}
       SourceDBInstanceIdentifier: !Ref DbPrimary
       DBInstanceClass: db.t3.micro
-VPCSecurityGroups:
-  - !GetAtt DbBSg.GroupId
+      DBSubnetGroupName: !Ref DbSubnetsA
+      VPCSecurityGroups:
+        - !GetAtt DbBSg.GroupId
       PubliclyAccessible: false
       StorageEncrypted: true
       AutoMinorVersionUpgrade: true
