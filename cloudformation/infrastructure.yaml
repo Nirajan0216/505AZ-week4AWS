@@ -739,7 +739,7 @@ Resources:
       DBInstanceClass: db.t3.micro
       DBSubnetGroupName: !Ref DbSubnetsA
       VPCSecurityGroups:
-       - !GetAtt DbASg.GroupId
+       - !GetAtt DbBSg.GroupId
       PubliclyAccessible: false
       StorageEncrypted: true
       AutoMinorVersionUpgrade: true
