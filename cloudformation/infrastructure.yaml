@@ -516,7 +516,7 @@ Resources:
       SecurityGroupEgress:
         - IpProtocol: -1
           CidrIp: 0.0.0.0/0
-          Description: Default outbound policy for the replica SG
+          Description: all outbound traffic policy for the replica SG
       Tags:
         - Key: Name
           Value: civicnexus-db-b-sg
