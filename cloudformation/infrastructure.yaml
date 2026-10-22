@@ -708,6 +708,12 @@ Resources:
       - RtAWeb2Internet
       - RtAWeb1ToB
       - RtAWeb2ToB
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MaxBatchSize: 1
+        MinInstancesInService: 1
+        PauseTime: PT3M
+        WaitOnResourceSignals: false
     Properties:
       AutoScalingGroupName: !Sub civicnexus-web-asg-${Environment}
       MinSize: '2'
@@ -723,13 +729,6 @@ Resources:
       LaunchTemplate:
         LaunchTemplateId: !Ref LaunchTemplate
         Version: !GetAtt LaunchTemplate.LatestVersionNumber
-      InstanceRefresh:
-        Strategy: Rolling
-        Preferences:
-          MinHealthyPercentage: 50
-          InstanceWarmup: 180
-        Triggers:
-          - LaunchTemplate
       Tags:
         - Key: Name
           Value: civicnexus-web
@@ -854,3 +853,4 @@ Outputs:
   PeeringId:
     Description: VPC peering connection ID
     Value: !Ref VpcPeering
+    
