@@ -3,113 +3,7 @@ AWSTemplateFormatVersion: '2010-09-09'
 
 Description: >
   CivicNexus Week 4 - Secure dual-VPC architecture with VPC peering,
-  public ALB, private web Auto Sc      Tags:
-        - Key: Name
-          Value: civicnexus-db-subnets-a
-
-  DbSubnetsB:
-    Type: AWS::RDS::DBSubnetGroup
-    Properties:
-      DBSubnetGroupDescription: Private read replica subnets in VPC B
-      SubnetIds:
-        - !Ref BDB1
-        - !Ref BDB2
-      Tags:
-        - Key: Name
-          Value: civicnexus-db-subnets-b
-
-  # =========================================================
-  # PRIMARY MYSQL DATABASE
-  # Multi-AZ for availability and encrypted storage
-  # =========================================================
-
-  DbPrimary:
-    Type: AWS::RDS::DBInstance
-    DependsOn:
-      - RtADB1ToB
-      - RtADB2ToB
-    DeletionPolicy: Snapshot
-    UpdateReplacePolicy: Snapshot
-    Properties:
-      DBInstanceIdentifier: !Sub civicnexus-db-primary-${Environment}
-      Engine: mysql
-      EngineVersion: '8.0'
-      DBInstanceClass: db.t3.micro
-      AllocatedStorage: 20
-      StorageType: gp3
-      StorageEncrypted: true
-      DBName: !Ref DBName
-      MasterUsername: !Ref DBUsername
-      MasterUserPassword: !Ref DBPassword
-      DBSubnetGroupName: !Ref DbSubnetsA
-      VPCSecurityGroups:
-        - !GetAtt DbASg.GroupId
-      PubliclyAccessible: false
-      MultiAZ: true
-      BackupRetentionPeriod: 7
-      AutoMinorVersionUpgrade: true
-      CopyTagsToSnapshot: true
-      Tags:
-        - Key: Name
-          Value: civicnexus-db-primary
-
-  # =========================================================
-  # CROSS-VPC MYSQL READ REPLICA
-  # Private endpoint in VPC B, reached through VPC peering
-  # =========================================================
-
-  DbReplica:
-    Type: AWS::RDS::DBInstance
-    DependsOn:
-      - DbPrimary
-      - RtBDB1ToA
-      - RtBDB2ToA
-    DeletionPolicy: Snapshot
-    UpdateReplacePolicy: Snapshot
-    Properties:
-      DBInstanceIdentifier: !Sub civicnexus-db-replica-${Environment}
-      SourceDBInstanceIdentifier: !Ref DbPrimary
-      DBInstanceClass: db.t3.micro
-      DBSubnetGroupName: !Ref DbSubnetsA
-      VPCSecurityGroups:
-       - !GetAtt DbASg.GroupId
-      PubliclyAccessible: false
-      StorageEncrypted: true
-      AutoMinorVersionUpgrade: true
-      CopyTagsToSnapshot: true
-      Tags:
-        - Key: Name
-          Value: civicnexus-db-replica
-
-Outputs:
-
-  AlbDnsName:
-    Description: Public DNS name of the application load balancer
-    Value: !GetAtt Alb.DNSName
-
-  WebAsgName:
-    Description: Name of the private web Auto Scaling Group
-    Value: !Ref WebAsg
-
-  RdsPrimaryEndpoint:
-    Description: Private writer endpoint in VPC A
-    Value: !GetAtt DbPrimary.Endpoint.Address
-
-  RdsReplicaEndpoint:
-    Description: Private read replica endpoint in VPC B
-    Value: !GetAtt DbReplica.Endpoint.Address
-
-  VpcAId:
-    Description: Application VPC ID
-    Value: !Ref VpcA
-
-  VpcBId:
-    Description: Data VPC ID
-    Value: !Ref VpcB
-
-  PeeringId:
-    Description: VPC peering connection ID
-    Value: !Ref VpcPeeringaling Group, Multi-AZ RDS primary,
+  public ALB, private web Auto Scaling Group, Multi-AZ RDS primary,
   and a private cross-VPC MySQL read replica.
 
 Parameters:
@@ -151,6 +45,12 @@ Parameters:
     MinLength: 1
     MaxLength: 64
     AllowedPattern: '[a-zA-Z][a-zA-Z0-9]*'
+
+  AzureHlsSasToken:
+    Type: String
+    NoEcho: true
+    Default: ''
+    Description: 'Read-only container SAS for abr, without leading question mark. Supply via deployment pipeline; do not commit the token.'
 
 Resources:
 
@@ -703,21 +603,71 @@ Resources:
         UserData:
           Fn::Base64: !Sub |
             #!/bin/bash
-            set -eux
+            set -eu
 
             dnf install -y httpd
             systemctl enable --now httpd
 
             cat > /var/www/html/index.html <<'EOF'
             <!DOCTYPE html>
-            <html>
+            <html lang="en">
             <head>
-              <title>CivicNexus Week 4</title>
+              <meta charset="UTF-8">
+              <meta name="viewport" content="width=device-width,initial-scale=1">
+              <title>CivicNexus | Azure HLS Streaming</title>
+              <script src="https://cdn.jsdelivr.net/npm/shaka-player@4.11.7/dist/shaka-player.compiled.js"></script>
+              <style>
+                body { background:#101827; color:#f3f6ff; font-family:Arial,sans-serif; text-align:center; padding:30px; }
+                video { width:100%; max-width:900px; background:black; }
+                #status { padding:12px; }
+              </style>
             </head>
-            <body style="font-family:sans-serif;text-align:center;padding-top:60px;">
-              <h1>CivicNexus Web Tier</h1>
-              <p>Private application instance behind the ALB.</p>
-              <p>Dual-VPC segmented architecture.</p>
+            <body>
+              <h1>CivicNexus Video Streaming</h1>
+              <p>AWS Application Load Balancer + Azure Blob Storage + Shaka Player</p>
+              <video id="video" controls playsinline></video>
+              <p id="status">Loading HLS video...</p>
+              <script>
+                (async function () {
+                  const status = document.getElementById('status');
+                  const manifest = 'https://505aznirajan.blob.core.windows.net/abr/main.m3u8';
+                  const sasToken = '${AzureHlsSasToken}'.replace(/^\?/, '');
+                  try {
+                    if (!window.shaka || !shaka.Player.isBrowserSupported()) {
+                      throw new Error('Shaka Player is unavailable or browser unsupported');
+                    }
+                    shaka.polyfill.installAll();
+                    const player = new shaka.Player();
+                    await player.attach(document.getElementById('video'));
+                    player.addEventListener('error', function (event) {
+                      status.textContent = 'Playback error: ' + event.detail.code;
+                      console.error('Shaka error', event.detail);
+                    });
+                    if (!sasToken) {
+                      throw new Error('AzureHlsSasToken deployment parameter is empty');
+                    }
+                    player.getNetworkingEngine().registerRequestFilter(function (type, request) {
+                      const requestTypes = shaka.net.NetworkingEngine.RequestType;
+                      if (type !== requestTypes.MANIFEST && type !== requestTypes.SEGMENT) return;
+                      request.uris = request.uris.map(function (uri) {
+                        const url = new URL(uri);
+                        if (url.hostname === '505aznirajan.blob.core.windows.net' &&
+                            url.pathname.startsWith('/abr/')) {
+                          new URLSearchParams(sasToken).forEach(function (value, key) {
+                            url.searchParams.set(key, value);
+                          });
+                        }
+                        return url.toString();
+                      });
+                    });
+                    await player.load(manifest);
+                    status.textContent = 'Video ready. Press Play.';
+                  } catch (error) {
+                    status.textContent = 'Video failed to load: ' + (error.code || error.message);
+                    console.error('Video load failed', error);
+                  }
+                })();
+              </script>
             </body>
             </html>
             EOF
@@ -759,6 +709,13 @@ Resources:
       LaunchTemplate:
         LaunchTemplateId: !Ref LaunchTemplate
         Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      InstanceRefresh:
+        Strategy: Rolling
+        Preferences:
+          MinHealthyPercentage: 50
+          InstanceWarmup: 180
+        Triggers:
+          - LaunchTemplate
       Tags:
         - Key: Name
           Value: civicnexus-web
