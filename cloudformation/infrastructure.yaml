@@ -46,11 +46,6 @@ Parameters:
     MaxLength: 64
     AllowedPattern: '[a-zA-Z][a-zA-Z0-9]*'
 
-  AzureHlsSasToken:
-    Type: String
-    NoEcho: true
-    Default: ''
-    Description: 'Read-only container SAS for abr, without leading question mark. Supply via deployment pipeline; do not commit the token.'
 
 Resources:
 
@@ -625,47 +620,66 @@ Resources:
             <body>
               <h1>CivicNexus Video Streaming</h1>
               <p>AWS Application Load Balancer + Azure Blob Storage + Shaka Player</p>
+              <div id="auth">
+                <label for="sas">Enter Azure Blob Storage SAS token</label><br><br>
+                <input id="sas" type="password" autocomplete="off" spellcheck="false"
+                       placeholder="Paste SAS token (with or without ?)"
+                       style="width:90%;max-width:720px;padding:12px;box-sizing:border-box;">
+                <button id="load" type="button" style="padding:12px;">Load HLS video</button>
+                <p style="font-size:13px;">The token stays in this browser tab and is not saved by this page.</p>
+              </div>
               <video id="video" controls playsinline></video>
-              <p id="status">Loading HLS video...</p>
+              <p id="status" role="status">Enter your SAS token to start streaming.</p>
               <script>
-                (async function () {
+                (function () {
                   const status = document.getElementById('status');
+                  const input = document.getElementById('sas');
+                  const button = document.getElementById('load');
                   const manifest = 'https://505aznirajan.blob.core.windows.net/abr/main.m3u8';
-                  const sasToken = '${AzureHlsSasToken}'.replace(/^\?/, '');
-                  try {
-                    if (!window.shaka || !shaka.Player.isBrowserSupported()) {
-                      throw new Error('Shaka Player is unavailable or browser unsupported');
-                    }
-                    shaka.polyfill.installAll();
-                    const player = new shaka.Player();
-                    await player.attach(document.getElementById('video'));
-                    player.addEventListener('error', function (event) {
-                      status.textContent = 'Playback error: ' + event.detail.code;
-                      console.error('Shaka error', event.detail);
-                    });
+                  let player = null;
+                  button.addEventListener('click', async function () {
+                    const sasToken = input.value.trim().replace(/^\?/, '');
                     if (!sasToken) {
-                      throw new Error('AzureHlsSasToken deployment parameter is empty');
+                      status.textContent = 'Please enter a SAS token.';
+                      return;
                     }
-                    player.getNetworkingEngine().registerRequestFilter(function (type, request) {
-                      const requestTypes = shaka.net.NetworkingEngine.RequestType;
-                      if (type !== requestTypes.MANIFEST && type !== requestTypes.SEGMENT) return;
-                      request.uris = request.uris.map(function (uri) {
-                        const url = new URL(uri);
-                        if (url.hostname === '505aznirajan.blob.core.windows.net' &&
-                            url.pathname.startsWith('/abr/')) {
-                          new URLSearchParams(sasToken).forEach(function (value, key) {
-                            url.searchParams.set(key, value);
-                          });
-                        }
-                        return url.toString();
+                    input.value = '';
+                    button.disabled = true;
+                    status.textContent = 'Loading HLS playlist and segments...';
+                    try {
+                      if (!window.shaka) throw new Error('Shaka Player script did not load');
+                      shaka.polyfill.installAll();
+                      if (!shaka.Player.isBrowserSupported()) throw new Error('Browser not supported');
+                      if (player) await player.destroy();
+                      player = new shaka.Player();
+                      await player.attach(document.getElementById('video'));
+                      player.addEventListener('error', function (event) {
+                        status.textContent = 'Playback error: ' + event.detail.code;
+                        console.error('Shaka playback error', event.detail);
                       });
-                    });
-                    await player.load(manifest);
-                    status.textContent = 'Video ready. Press Play.';
-                  } catch (error) {
-                    status.textContent = 'Video failed to load: ' + (error.code || error.message);
-                    console.error('Video load failed', error);
-                  }
+                      player.getNetworkingEngine().registerRequestFilter(function (type, request) {
+                        const requestTypes = shaka.net.NetworkingEngine.RequestType;
+                        if (type !== requestTypes.MANIFEST && type !== requestTypes.SEGMENT) return;
+                        request.uris = request.uris.map(function (uri) {
+                          const url = new URL(uri);
+                          if (url.hostname === '505aznirajan.blob.core.windows.net' &&
+                              url.pathname.startsWith('/abr/')) {
+                            new URLSearchParams(sasToken).forEach(function (value, key) {
+                              url.searchParams.set(key, value);
+                            });
+                          }
+                          return url.toString();
+                        });
+                      });
+                      await player.load(manifest);
+                      status.textContent = 'Video ready. Press Play.';
+                    } catch (error) {
+                      status.textContent = 'Video failed: ' + (error.code || error.message);
+                      console.error('Video load failed', error);
+                    } finally {
+                      button.disabled = false;
+                    }
+                  });
                 })();
               </script>
             </body>
