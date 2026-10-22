@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HLS Stream with SAS Token using Shaka Player</title>
+    <!-- Include Shaka Player library from the CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/shaka-player@4.11.7/dist/shaka-player.ui.min.js"></script>
+    <link href="https://cdn.jsdelivr.net/npm/shaka-player@4.11.7/dist/controls.min.css" rel="stylesheet">
+</head>
+
+<body>
+    <h1>HLS Stream with SAS Token using Shaka Player</h1>
+
+    <!-- Video player element -->
+    <video id="video" controls width="640" height="360" autoplay></video>
+
+    <script>
+
+        // Azure SAS token
+        const sasToken = "sp=r&st=2024-10-03T16:10:22Z&se=2024-10-04T00:10:22Z&spr=https&sv=2022-11-02&sr=c&sig=IuCXFh2vvwEmboiF3gFM%2B0F3Bf5vFFCXKB%2FbOGy0Csc%3D"
+        console.log(sasToken);
+
+        // Get the video element
+        const video = document.getElementById('video');
+
+
+        // Initialize the Shaka Player
+        const player = new shaka.Player(video);
+
+        // Listen for error events
+        player.addEventListener('error', onErrorEvent);
+
+        // Function to handle errors
+        function onErrorEvent(event) {
+            console.error('Error code', event.detail.code, 'object', event.detail);
+        }
+
+        // Function to append SAS token to all segment requests
+        function addSASTokenToSegments(networkingEngine) {
+            networkingEngine.registerRequestFilter(function (type, request) {
+                if (type == shaka.net.NetworkingEngine.RequestType.SEGMENT || type === shaka.net.NetworkingEngine.RequestType.MANIFEST) {
+                    // Append the SAS token as a query parameter
+                    console.log(request.uris);
+                    request.uris = request.uris.map(uri => `${uri}?${sasToken}`);
+                    //request.uris = request.uris.map(uri => `${uri}`);
+                    console.log(request.uris);
+                }
+            });
+        }
+
+        // Load the manifest URI and configure the player
+        async function initPlayer() {
+            // Create a networking engine and add the SAS token to segment requests
+            const networkingEngine = player.getNetworkingEngine();
+            addSASTokenToSegments(networkingEngine);
+
+            // Configure the player with the manifest URI
+            const manifestUri = `https://danhlscuctest.blob.core.windows.net/abrstream/main.m3u8`;
+            console.log(manifestUri);
+            try {
+                await player.load(manifestUri);
+                console.log('The video has now been loaded!');
+            } catch (error) {
+                //console.error('Error loading the video:', error);
+                console.error('Error code', event.detail.code, 'object', event.detail);
+            }
+        }
+
+        // Initialize the player and load the video
+        initPlayer();
+    </script>
+</body>
+
+</html>
