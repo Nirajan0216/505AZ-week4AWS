@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HLS Stream with SAS Token using Shaka Player</title>
+    <!-- Include Shaka Player library from the CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/shaka-player@4.11.7/dist/shaka-player.ui.min.js"></script>
+    <link href="https://cdn.jsdelivr.net/npm/shaka-player@4.11.7/dist/controls.min.css" rel="stylesheet">
+    <style>
+        #quality-selection {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background-color: white;
+            z-index: 10;
+            padding: 5px;
+            border-radius: 5px;
+            box-shadow: 0px 0px 5px rgba(0, 0, 0, 0.5);
+        }
+    </style>
+</head>
+
+<body>
+    <h1>HLS Stream with SAS Token using Shaka Player</h1>
+
+    <!-- Video player element -->
+    <video id="video" controls width="640" height="360" autoplay></video>
+    <div id="quality-selection">
+        <label for="quality-levels">Select Quality: </label>
+        <select id="quality-levels"></select>
+    </div>
+
+
+    <script>
+
+        // Azure SAS token
+        const sasToken = "sp=r&st=2026-10-22T14:12:58Z&se=2026-10-22T22:27:58Z&spr=https&sv=2026-02-06&sr=c&sig=WNBm4xizR0pELT4RcojOrvs%2FwBjGi4njQyo4zfzRTzM%3D"
+        console.log(sasToken);
+
+        // Get the video element
+        const video = document.getElementById('video');
+
+
+        // Initialize the Shaka Player
+        const player = new shaka.Player(video);
+
+        // Listen for error events
+        player.addEventListener('error', onErrorEvent);
+
+        // Function to handle errors
+        function onErrorEvent(event) {
+            console.error('Error code', event.detail.code, 'object', event.detail);
+        }
+
+        // Function to append SAS token to all segment requests
+        function addSASTokenToSegments(networkingEngine) {
+            networkingEngine.registerRequestFilter(function (type, request) {
+                if (type == shaka.net.NetworkingEngine.RequestType.SEGMENT || type === shaka.net.NetworkingEngine.RequestType.MANIFEST) {
+                    // Append the SAS token as a query parameter
+                    console.log(request.uris);
+                    request.uris = request.uris.map(uri => `${uri}?${sasToken}`);
+                    //request.uris = request.uris.map(uri => `${uri}`);
+                    console.log(request.uris);
+                }
+            });
+        }
+
+        // Populate the quality selector UI
+        function populateQualitySelector() {
+            const qualitySelector = document.getElementById('quality-levels');
+            const tracks = player.getVariantTracks();
+
+            // Clear the existing options
+            qualitySelector.innerHTML = '';
+
+            // Add options for each available track (quality level)
+            tracks.forEach(track => {
+                const option = document.createElement('option');
+                option.value = track.id;
+                option.text = `${Math.round(track.bandwidth / 1000)} kbps`;
+                qualitySelector.appendChild(option);
+            });
+
+            // Set the current active track as the selected option
+            const activeTrack = tracks.find(track => track.active);
+            if (activeTrack) {
+                qualitySelector.value = activeTrack.id;
+            }
+
+            // Listen for quality selection changes
+            qualitySelector.addEventListener('change', (event) => {
+                const selectedTrackId = parseInt(event.target.value);
+                const selectedTrack = tracks.find(track => track.id === selectedTrackId);
+
+                if (selectedTrack) {
+                    // Disable ABR (adaptive bitrate switching)
+                    player.configure({ abr: { enabled: false } });
+
+                    // Select the chosen track
+                    player.selectVariantTrack(selectedTrack, /* clearBuffer= */ true);
+                    console.log(`Selected quality: ${selectedTrack.height}p (${Math.round(selectedTrack.bandwidth / 1000)} kbps)`);
+                }
+            });
+        }
+
+        // Load the manifest URI and configure the player
+        async function initPlayer() {
+            // Create a networking engine and add the SAS token to segment requests
+            const networkingEngine = player.getNetworkingEngine();
+            addSASTokenToSegments(networkingEngine);
+
+            // Configure the player with the manifest URI
+            const manifestUri = `https://Stream-fmdsgmbgdwhfeedj.a03.azurefd.net/main.m3u8`;
+            console.log(manifestUri);
+            try {
+                await player.load(manifestUri);
+                // Populate the quality selector after loading the video
+                populateQualitySelector();
+                console.log('The video has now been loaded!');
+            } catch (error) {
+                //console.error('Error loading the video:', error);
+                console.error('Error code', event.detail.code, 'object', event.detail);
+            }
+        }
+
+        // Initialize the player and load the video
+        initPlayer();
+    </script>
+</body>
+
+</html>
